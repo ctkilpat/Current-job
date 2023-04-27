@@ -1,0 +1,361 @@
+import os
+import sys
+from functools import reduce
+from sqlalchemy import create_engine
+from sqlalchemy import Table, Column, String, MetaData, Integer
+from sqlalchemy import inspect
+import psycopg2
+import random 
+import string
+import warnings
+warnings.filterwarnings('ignore')
+import numpy as np
+import pandas as pd
+import datetime as dt
+from datetime import datetime
+from datetime import date
+from datetime import time
+from datetime import timedelta
+from dateutil.relativedelta import relativedelta
+from itertools import accumulate
+from itertools import repeat
+import time
+import xlsxwriter
+import re
+
+pd.set_option('display.max_columns', 999)
+pd.set_option('display.max_rows', 999)
+pd.set_option('display.max_colwidth', 999)
+
+# Insert your username into the textbox and hit enter
+username = input("Please enter your username: ")
+
+# Insert your password into the textbox and hit enter
+password = input("Please enter your password: ")
+
+db_postgres = create_engine('postgresql://'+username+':'+password+'@localhost:7005/drc')
+
+## Non-PM Counts
+
+data = pd.read_sql(f'''
+
+select distinct participant_id
+    , MAX(CASE WHEN sign_up_time is not null THEN 1 ELSE 0 END) as created_account
+    , MAX(CASE WHEN primary_consent_date is not null THEN 1 ELSE 0 END) as primary_consent
+    , MAX(CASE WHEN current_consent_date >= '2018-04-24' THEN 1 ELSE 0 END) as revised_primary_consent
+    , MAX(CASE WHEN mod_module IN('EHRConsentPII','DVEHRSharing') THEN 1 ELSE 0 end) as ehr_or_dv_consent_any
+    , MAX(CASE WHEN mod_module = 'EHRConsentPII' THEN 1 ELSE 0 end) as ehr_consent_any
+    , MAX(CASE WHEN mod_module IN('EHRConsentPII','DVEHRSharing') 
+        AND mod_consent_value IN ('ConsentPermission_Yes','DVEHRSharing_Yes') 
+        THEN 1 ELSE 0 end) as ehr_or_dv_consent_yes
+    , MAX(CASE WHEN mod_module = 'EHRConsentPII' AND mod_consent_value='ConsentPermission_Yes'
+        THEN 1 ELSE 0 end) as ehr_consent_yes
+    , MAX(CASE WHEN mod_module = 'TheBasics' THEN 1 ELSE 0 end) as basics
+    , MAX(CASE WHEN mod_module = 'OverallHealth' THEN 1 ELSE 0 end) as overall_health
+    , MAX(CASE WHEN mod_module = 'Lifestyle' THEN 1 ELSE 0 end) as lifestyle
+    , MAX(CASE WHEN pm_finalized is not null THEN 1 ELSE 0 end) as pm_any
+    , MAX(CASE WHEN value_decimal is not null OR value_code_description is not null THEN 1 ELSE 0 end) as hw_with_skips
+    , MAX(CASE WHEN value_decimal is not null THEN 1 ELSE 0 end) as hw_no_skips
+    , MAX(CASE WHEN bbs_finalized is not null THEN 1 ELSE 0 end) as biosample
+    , MAX(CASE WHEN ehr_status = 'PRESENT' THEN 1 ELSE 0 end) as ehr
+    , MAX(CASE WHEN mod_module = 'GROR' THEN 1 ELSE 0 end) as gror_any
+    , MAX(CASE WHEN mod_module = 'GROR' AND consent_cohort_id=1 THEN 1 ELSE 0 end) as gror_cohort_1
+    , MAX(CASE WHEN mod_module = 'GROR' AND consent_cohort_id=2 THEN 1 ELSE 0 end) as gror_cohort_2
+    , MAX(CASE WHEN mod_module = 'GROR' AND consent_cohort_id=3 THEN 1 ELSE 0 end) as gror_cohort_3
+    , MAX(CASE WHEN consent_cohort_id IN (1, 2) OR (consent_cohort_id=3 AND mod_module = 'GROR') 
+        THEN 1 ELSE 0 END) as gror_baseline
+    
+from pdr.mv_participant_display pd
+left join (
+    select participant_id
+        , mod_module
+        , mod_consent_value
+        , mod_status_id
+        , mod_response_status_id
+    from pdr.mv_participant_module
+    where mod_status_id IN (1,2)
+        AND mod_response_status_id = 1
+    ) mod using (participant_id)
+left join pdr.mv_participant_pm pm using (participant_id)
+left join (
+    select physical_measurements_id
+        , code_value
+        , value_decimal
+        , value_code_description
+    from pdr.mv_participant_measurement
+    where code_value in ('height','weight','protocol-modifications-height','protocol-modifications-weight')
+    ) meas on meas.physical_measurements_id = pm.pm_physical_measurements_id
+left join pdr.mv_participant_biobank_sample bio using (participant_id)
+
+--where mod.mod_status_id = 1
+    --AND mod.mod_response_status_id = 1
+GROUP BY 1
+''', db_postgres)
+
+data
+
+data.sum()
+
+df = data
+df['g1a'] = df[['created_account', 'primary_consent', 'ehr_or_dv_consent_any', 'gror_any', 'basics']].min(axis=1)
+df['g1b'] = df[['created_account', 'primary_consent', 'ehr_consent_any', 'basics']].min(axis=1)
+df['g2a'] = df[['created_account', 'revised_primary_consent', 'ehr_or_dv_consent_yes', 'gror_baseline', 
+                'basics', 'overall_health', 'lifestyle', 'pm_any', 'biosample', 'ehr']].min(axis=1)
+df['g2b'] = df[['created_account', 'revised_primary_consent', 'ehr_consent_yes',
+                'basics', 'overall_health', 'lifestyle', 'hw_no_skips', 'biosample', 'ehr']].min(axis=1)
+df['g2c'] = df[['created_account', 'revised_primary_consent', 'ehr_consent_yes', 'gror_any',
+                'basics', 'overall_health', 'lifestyle', 'hw_no_skips', 'biosample', 'ehr']].min(axis=1)
+df['g2d'] = df[['created_account', 'revised_primary_consent', 'ehr_consent_yes',
+                'basics', 'overall_health', 'lifestyle', 'hw_with_skips', 'biosample', 'ehr']].min(axis=1)
+df['g2e'] = df[['created_account', 'revised_primary_consent', 'ehr_consent_yes', 'gror_cohort_3',
+                'basics', 'overall_health', 'lifestyle', 'hw_no_skips', 'biosample', 'ehr']].min(axis=1)
+df
+
+totals = pd.DataFrame(data=df.iloc[:,1:].sum(), columns=["participants"])
+totals
+
+## Group 5 - Skips
+
+pm_data = pd.read_sql(f'''
+
+select distinct participant_id
+    , physical_measurements_id
+    , code_value
+    , measurement_time
+    , value_code_description
+    , pm_origin
+    , pm_collect_type
+    , organization_type
+from pdr.mv_participant_pm pm
+left join pdr.mv_participant_measurement meas on pm.pm_physical_measurements_id = meas.physical_measurements_id
+inner join pdr.mv_participant_display pd using(participant_id)
+inner join pdr.mv_hpo hpo on hpo.name = pd.hpo
+where code_value in ('weight', 'height', 'protocol-modifications-weight', 'protocol-modifications-height')
+
+''', db_postgres)
+
+pm_data
+
+### Initial and Recent Measurements
+
+def initial_measurements(df, code_values):
+    df = df[df['code_value'].isin(code_values)]
+    initial_measurement_time = pd.DataFrame(df.groupby(by=['participant_id','code_value'])
+                                        ['measurement_time'].min().reset_index())
+    initial_measurement = df.merge(initial_measurement_time, how='inner', on=['participant_id', 'code_value',
+                                                                               'measurement_time'])
+    return initial_measurement
+
+initial_heights = initial_measurements(pm_data, ['height','protocol-modifications-height'])
+initial_weights = initial_measurements(pm_data, ['weight','protocol-modifications-weight'])
+
+def recent_measurements(df, code_values):
+    df = df[df['code_value'].isin(code_values)]
+    recent_measurement_time = pd.DataFrame(df.groupby(by=['participant_id','code_value'])
+                                        ['measurement_time'].max().reset_index())
+    recent_measurement = df.merge(recent_measurement_time, how='inner', on=['participant_id', 'code_value',
+                                                                               'measurement_time'])
+    return recent_measurement
+
+recent_heights = recent_measurements(pm_data, ['height','protocol-modifications-height'])
+recent_weights = recent_measurements(pm_data, ['weight','protocol-modifications-weight'])
+
+categories = {'initial_heights':initial_heights, 'initial_weights':initial_weights,
+             'recent_heights':recent_heights, 'recent_weights':recent_weights}
+
+def make_categories(categories, groupby):
+    categories_list = []
+    for name, category in categories.items():
+        df = make_category(category, groupby)
+        df['category'] = name
+        categories_list.append(df)
+    categories_table = pd.concat(categories_list)
+    return categories_table
+
+def make_category(cat_df, groupby):
+    hpro, dv, hpo, self = make_tables(cat_df, groupby)
+    tables = {'hpro':hpro, 'dv':dv, 'hpo':hpo, 'self':self}
+    tables_list = []
+    for name, df in tables.items():
+        tables_list.append(get_per(name, df))
+    category_table = pd.concat(tables_list)
+    return category_table
+
+def make_tables(df, groupby):
+    hpro = pd.DataFrame(df[df['pm_origin']=='hpro'].groupby(by=groupby)['participant_id']
+                        .nunique().reset_index())
+    dv = pd.DataFrame(df[df['organization_type']=='DV'].groupby(by=groupby)['participant_id']
+                      .nunique().reset_index())
+    hpo = pd.DataFrame(df[df['organization_type'].isin(['HPO','FQHC','VA'])].groupby(by=groupby)['participant_id']
+                       .nunique().reset_index())
+    self = pd.DataFrame(df[df['pm_collect_type']=='SELF_REPORTED'].groupby(by=groupby)['participant_id']
+                        .nunique().reset_index())
+    return hpro, dv, hpo, self
+
+def get_per(name, df):
+    df['source'] = name
+    df['total'] = df['participant_id'].sum()
+    df['per'] = df['participant_id'] / df['total']
+    return df
+
+def format_categories(categories, groupby):
+    df = make_categories(categories, groupby)
+    df = df[df['code_value'].isin(['protocol-modifications-height', 'protocol-modifications-weight'])]
+    df['category'] = np.where(df['category'].isin(['initial_heights', 'initial_weights']), 'initial', 'recent')
+    df = df[['source', 'code_value', 'category', 'participant_id', 'per']]
+    df = df.rename(columns={'category':'time', 'code_value':'measurement', 'participant_id':'participant_count',
+                            'per':'percentage'})
+    df = df.sort_values(by=['source', 'measurement', 'time'])
+    return df
+
+format_categories(categories, 'code_value')
+
+### All Measurements
+
+def all_flags(df, code_values):
+    all_flags = df[df['code_value'].isin(code_values)]
+    all_flags['valid_measurement_flag'] = np.where(all_flags['code_value'] == code_values[0], 1, 0)
+    make_flag = pd.DataFrame(all_flags.groupby(by='participant_id')['valid_measurement_flag'].max().reset_index())
+    make_flag = make_flag.rename(columns={'valid_measurement_flag': "valid_measurement_count"})
+    all_flags = all_flags.merge(make_flag, how='inner', on=['participant_id'])
+    return all_flags
+
+all_heights = all_flags(pm_data, ['height','protocol-modifications-height'])
+all_weights = all_flags(pm_data, ['weight','protocol-modifications-weight'])
+
+all_weights
+
+def format_categories_all(categories, groupby):
+    df = make_categories(categories, groupby)
+    df = df[df['valid_measurement_count']==0]
+    df['category'] = np.where(df['category']=='all_heights', 'height', 'weight')
+    df = df[['source',  'category', 'valid_measurement_count', 'participant_id', 'per']]
+    df = df.rename(columns={'category':'measurement', 'valid_measurement_count':'all_skip_flag',
+                            'participant_id':'participant_count', 'per':'percentage'})
+    df = df.sort_values(by=['source', 'measurement'])
+    return df
+
+all_categories = {'all_heights':all_heights, 'all_weights':all_weights}
+format_categories_all(all_categories, 'valid_measurement_count')
+
+#just because it feels weird to not find any
+def all_skip_verification(measurement, modification):
+    test = pm_data
+    test['height_flag'] = np.where(test['code_value']=='height', 1, 0)
+    test['height_skip_flag'] = np.where(test['code_value']=='protocol-modifications-height', 1, 0)
+    test_group = test.groupby(by='participant_id')['height_flag', 'height_skip_flag'].max().reset_index()
+    test_group['check'] = test_group['height_flag'] - test_group['height_skip_flag']
+    test_group = test_group[test_group['check']==-1]
+    return test_group
+
+height_test = all_skip_verification('height', 'protocol-modifications-height')
+height_test
+
+weight_test = all_skip_verification('weight', 'protocol-modifications-weight')
+weight_test
+
+### All Skips - Revised
+
+pm_data = pd.read_sql(f'''
+
+select distinct participant_id
+    , CASE WHEN organization_type IN ('HPO','FQHC','VA') THEN 1 ELSE 0 END AS hpo
+    , CASE WHEN organization_type = 'DV' THEN 1 ELSE 0 END AS dv
+    , MAX(CASE WHEN code_value = 'height' THEN 1 ELSE 0 END) AS height
+    , MAX(CASE WHEN code_value = 'weight' THEN 1 ELSE 0 END) AS weight
+
+from pdr.mv_participant_pm pm
+left join pdr.mv_participant_measurement meas on pm.pm_physical_measurements_id = meas.physical_measurements_id
+inner join pdr.mv_participant_display pd using(participant_id)
+left join pdr.mv_hpo hpo on hpo.name = pd.hpo
+where code_value in ('weight', 'height', 'protocol-modifications-weight', 'protocol-modifications-height')
+    and pm_status_id = 1
+group by 1, 2, 3
+
+''', db_postgres)
+
+pm_data
+
+hpo = pm_data[pm_data['hpo']==1]
+hpo_height_check = len(hpo[hpo['height']==0])
+hpo_height_per = hpo_height_check / len(hpo['height'])
+
+print(hpo_height_check, hpo_height_per)
+
+hpo_weight_check = len(hpo[hpo['weight']==0])
+hpo_weight_per = hpo_weight_check / len(hpo['weight'])
+
+print(hpo_weight_check, hpo_weight_per)
+
+dv = pm_data[pm_data['dv']==1]
+dv_height_check = len(dv[dv['height']==0])
+dv_height_per = dv_height_check / len(dv['height'])
+
+print(dv_height_check, dv_height_per)
+
+dv = pm_data[pm_data['dv']==1]
+dv_weight_check = len(dv[dv['weight']==0])
+dv_weight_per = dv_weight_check / len(dv['weight'])
+
+print(dv_weight_check, dv_weight_per)
+
+### By Quarters
+
+quarters_data = pd.read_sql(f'''
+
+select code_value
+    , extract(YEAR from measurement_time) as year
+    , extract(QUARTER from measurement_time) as quarter
+    , count(distinct participant_id) as count
+from pdr.mv_participant_pm pm
+inner join pdr.mv_participant_measurement meas on pm.pm_physical_measurements_id = meas.physical_measurements_id
+where code_value in ('weight', 'height', 'protocol-modifications-weight', 'protocol-modifications-height')
+group by 1, 2, 3
+order by 1, 2, 3 asc
+
+''', db_postgres)
+
+quarters_data
+
+#height quarters
+height_skip_quarters = quarters_data[quarters_data['code_value']=='protocol-modifications-height'][['year', 'quarter', 'count']]
+height_quarters = quarters_data[quarters_data['code_value']=='height'][['year', 'quarter', 'count']]
+height_quarters_df = height_skip_quarters.merge(height_quarters, how='inner', on=['year', 'quarter'])
+height_quarters_df['per'] = height_quarters_df['count_x'] / height_quarters_df['count_y']
+height_quarters_df = height_quarters_df.rename(columns={'count_x':'skips', 'per':'percentage'}).drop(columns='count_y')
+height_quarters_df
+
+#weight quarters
+weight_skip_quarters = quarters_data[quarters_data['code_value']=='protocol-modifications-weight'][['year', 'quarter', 'count']]
+weight_quarters = quarters_data[quarters_data['code_value']=='weight'][['year', 'quarter', 'count']]
+weight_quarters_df = weight_skip_quarters.merge(weight_quarters, how='inner', on=['year', 'quarter'])
+weight_quarters_df['per'] = weight_quarters_df['count_x'] / weight_quarters_df['count_y']
+weight_quarters_df = weight_quarters_df.rename(columns={'count_x':'skips', 'per':'percentage'}).drop(columns='count_y')
+weight_quarters_df
+
+### By Reasons
+
+reasons_data = pd.read_sql(f'''
+
+select code_value
+    , value_code_description
+    , count(distinct participant_id) as skip_count
+from pdr.mv_participant_pm pm
+left join pdr.mv_participant_measurement meas on pm.pm_physical_measurements_id = meas.physical_measurements_id
+where code_value in ('protocol-modifications-weight', 'protocol-modifications-height')
+group by 1, 2
+
+''', db_postgres)
+
+reasons_data
+
+height_reasons = reasons_data[reasons_data['code_value']=='protocol-modifications-height']
+height_reasons = height_reasons.sort_values(by='skip_count', ascending=False).drop(columns='code_value')
+height_reasons
+
+weight_reasons = reasons_data[reasons_data['code_value']=='protocol-modifications-weight']
+weight_reasons = weight_reasons.sort_values(by='skip_count', ascending=False).drop(columns='code_value')
+weight_reasons
+
+height_reasons.to_csv('DRCA-1739_height_reasons.csv', index=False)
+weight_reasons.to_csv('DRCA-1739_weight_reasons.csv', index=False)
