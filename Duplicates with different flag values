@@ -1,0 +1,388 @@
+# Set up Notebook
+
+#!pip install --upgrade google-cloud-bigquery[pandas]
+
+from google.cloud import bigquery
+
+%reload_ext google.cloud.bigquery
+
+client=bigquery.Client()
+
+%load_ext google.cloud.bigquery
+
+import os
+import sys
+from functools import reduce
+from sqlalchemy import create_engine
+from sqlalchemy import Table, Column, String, MetaData, Integer
+from sqlalchemy import inspect
+import psycopg2
+import random 
+import string
+import warnings
+warnings.filterwarnings('ignore')
+import numpy as np
+import pandas as pd
+import datetime as dt
+from datetime import datetime
+from datetime import date
+from datetime import time
+from datetime import timedelta
+from dateutil.relativedelta import relativedelta
+from itertools import accumulate
+from itertools import repeat
+import time
+import xlsxwriter
+import re
+import jpype
+import asposecells
+
+rdr_where = '''
+
+ withdrawal status = 0 and is_test_participant = 0
+      p.hpo_id != 21 and p.is_ghost_id is null and
+     (ps.email NOT LIKE '%@example.com' or ps.email IS NULL) and
+     (REPLACE(REPLACE(REPLACE(REPLACE(ps.phone_number, '(', ''), ')', ''), '-', ''), ' ', '') not like '4442%' or ps.phone_number IS NULL) and
+     (REPLACE(REPLACE(REPLACE(REPLACE(ps.login_phone_number, '(', ''), ')', ''), '-', ''), ' ', '')  not like '4442%' or ps.login_phone_number IS NULL)'''
+
+# Credentials
+
+import mysql.connector
+
+connect_options = {
+   'user':'cpatrick',
+   'password':'6WXSrtXGWFqdOL8a', 
+   'host':'localhost',
+   'port':'9905',
+   'database':'rdr',
+   'raise_on_warnings': True}
+
+
+## The next line of code is commented out because you do not need to run it 
+# if you did it in the co8mmand line
+# as shown in step 1
+
+cnx = mysql.connector.connect(**connect_options)
+
+# Match on participants on:
+
+## Email AND phone 
+
+######################################
+print('Getting the data from the database...')
+##########################431############
+
+query = ('''  
+    SELECT
+       ps.first_name,ps.last_name,ps.phone_number,ps.email,date_of_birth,ps.participant_id,o.display_name,ps.organization_id,ps.hpo_id,ps.participant_origin,ps.consent_for_study_enrollment_authored,
+       p.is_ghost_id, ps.zip_code,ps.state_id,city,ps.street_address,ps.withdrawal_status,ps.login_phone_number,health_data_stream_sharing_status_v_3_1,
+    CASE 
+        WHEN
+         (ps.hpo_id = 21 or p.is_ghost_id is not null) or
+         (lower(ps.email) LIKE '%@example.com') or
+         (REPLACE(REPLACE(REPLACE(REPLACE(ps.phone_number, '(', ''), ')', ''), '-', ''), ' ', '') like '4442%') or
+         (REPLACE(REPLACE(REPLACE(REPLACE(ps.login_phone_number, '(', ''), ')', ''), '-', ''), ' ', '') like '4442%')
+           THEN 'Yes'
+           else "No" END as fake_test_participant_flag
+    FROM participant_summary as ps
+    left join organization as o on o.organization_id=ps.organization_id
+    left outer join participant as p USING(participant_id)
+    where (phone_number,email) in
+                                    (SELECT
+                                        phone_number,email
+                                    FROM participant AS p
+                                    Left outer Join participant_summary as ps
+                                    on p.participant_id=ps.participant_id
+                                    Group By 1,2
+                                    having count(*)>1
+                                    )
+                                  and ps.withdrawal_status != 1
+    order by 1,2,3
+''')
+
+#Now execute the query and put it it into a dataframe
+rdr = pd.read_sql(query, cnx)
+
+rdr.shape
+
+rdr['email']=rdr['email'].str.lower()
+
+rdr['last_name']=rdr['last_name'].str.lower()
+
+rdr['first_name']=rdr['first_name'].str.lower()
+
+rdr['first_name'] = rdr['first_name'].str.replace('é','e')
+rdr['first_name'] = rdr['first_name'].str.replace('í','i')
+rdr['last_name'] = rdr['last_name'].str.replace('é','e')
+rdr['last_name'] = rdr['last_name'].str.replace('í','i')
+rdr['last_name'] = rdr['last_name'].str.replace('á','a')
+rdr['last_name'] = rdr['last_name'].str.replace('ó','o')
+
+rdr['flag_1'] = np.where(rdr.duplicated(['first_name', 'last_name','date_of_birth','email','phone_number','withdrawal_status'],keep=False), 'Yes','No')
+
+rdr['flag_2'] = np.where(rdr.duplicated(['first_name', 'last_name','date_of_birth'],keep=False), 'Yes','No')
+
+rdr['flag_2_case_control'] = np.where(rdr.duplicated(['first_name', 'last_name','date_of_birth'],keep=False), 'Yes','No')
+
+rdr['flag_3'] = np.where(rdr.duplicated(['email','phone_number'],keep=False), 'Yes','No')
+
+rdr['flag_3_case_control'] = np.where(rdr.duplicated(['email','phone_number'],keep=False), 'Yes','No')
+
+rdr.loc[rdr['flag_3_case_control'] == 'Yes', 'flag_2'] = 'No'
+
+rdr.loc[rdr['flag_2_case_control'] == 'Yes', 'flag_3'] = 'No'
+
+rdr.head(5)
+
+franklin	torres	
+
+rdr.to_csv("..\\Downloads\\dups.csv")
+
+rdr['participant_origin'].value_counts()
+
+dublicated_email_phone=rdr[["first_name","last_name","phone_number","email","date_of_birth"]]
+
+dublicated_email_phone["dublicated_email_phone"]=1
+
+# How many accounts are there per count
+
+rdr=rdr[["participant_id","email", "phone_number",'participant_origin']]
+
+rdr.to_csv("..\\Downloads\\email_phone.csv")
+
+## first name, last name, and date of birth
+
+######################################
+print('Getting the data from the database...')
+##########################431############
+
+query = ('''  
+    SELECT 
+       ps.first_name,ps.last_name,ps.phone_number,ps.email,date_of_birth,ps.participant_id,o.display_name,ps.organization_id,ps.hpo_id,ps.participant_origin,ps.consent_for_study_enrollment_authored,
+       p.is_ghost_id,hpo.name, ps.zip_code,ps.ehr_status,ps.state_id,city,ps.street_address,ps.withdrawal_status,ps.login_phone_number,health_data_stream_sharing_status_v_3_1 ,
+    CASE 
+        WHEN
+         (ps.hpo_id = 21 or p.is_ghost_id is not null) or
+         (lower(ps.email) LIKE '%@example.com') or
+         (REPLACE(REPLACE(REPLACE(REPLACE(ps.phone_number, '(', ''), ')', ''), '-', ''), ' ', '') like '4442%') or
+         (REPLACE(REPLACE(REPLACE(REPLACE(ps.login_phone_number, '(', ''), ')', ''), '-', ''), ' ', '') like '4442%')
+           THEN 'Yes'
+           else "No" END as fake_test_participant_flag
+    FROM participant_summary as ps
+    left join organization as o on o.organization_id=ps.organization_id
+    left outer join participant as p USING(participant_id)
+    left join hpo as hpo on hpo.hpo_id=ps.hpo_id
+    where (ps.first_name, ps.last_name, ps.date_of_birth) in
+                                                            (SELECT
+                                                                ps.first_name, ps.last_name, ps.date_of_birth
+                                                            FROM participant AS p
+                                                            Left outer Join participant_summary as ps
+                                                            on p.participant_id=ps.participant_id
+                                                            Group By 1,2,3
+                                                            having count(*)>1
+                                                            )
+                                                                    
+    order by 1,2,3
+''')
+
+#Now execute the query and put it it into a dataframe
+rdr = pd.read_sql(query, 
+                     con=cnx)
+
+print('Done!')
+
+rdr.shape
+
+rdr['email']=rdr['email'].str.lower()
+
+rdr['last_name']=rdr['last_name'].str.lower()
+
+rdr['first_name']=rdr['first_name'].str.lower()
+
+rdr['flag_1'] = np.where(rdr.duplicated(['first_name', 'last_name','date_of_birth','email','phone_number'],keep=False), 'Yes','No')
+
+rdr['flag_2'] = np.where(rdr.duplicated(['first_name', 'last_name','date_of_birth'],keep=False), 'Yes','No')
+
+rdr['date_of_birth']= rdr['date_of_birth'].astype(str)
+
+rdr['key_2']= rdr['first_name'] + rdr['last_name'] + rdr['date_of_birth']
+
+rdr
+
+rdr['flag_2_case_control'] = rdr['flag_2'] 
+
+rdr['flag_3'] = np.where(rdr.duplicated(['email','phone_number'],keep=False), 'Yes','No')
+
+rdr['key_3']= rdr['email'] + rdr['phone_number'] 
+
+rdr
+
+rdr['flag_3_case_control'] = rdr['flag_3']
+
+rdr.loc[rdr['flag_3_case_control'] == 'Yes', 'flag_2'] = 'No'
+
+rdr.loc[rdr['flag_2_case_control'] == 'Yes', 'flag_3'] = 'No'
+
+rdr.tail(10)
+
+rdr['first_name'] = rdr['first_name'].str.strip()
+
+rdr['last_name'] = rdr['last_name'].str.strip()
+
+rdr['first_name'] = rdr['first_name'].str.replace('é','e')
+rdr['first_name'] = rdr['first_name'].str.replace('í','i')
+rdr['last_name'] = rdr['last_name'].str.replace('é','e')
+rdr['last_name'] = rdr['last_name'].str.replace('í','i')
+rdr['last_name'] = rdr['last_name'].str.replace('á','a')
+rdr['last_name'] = rdr['last_name'].str.replace('ó','o')
+
+
+
+rdr.to_csv("..\\Downloads\\first_last.csv")
+
+rdr
+
+duplicated_first_last_date_of_birth=rdr[["first_name","last_name","phone_number","email","withdrawal_status","participant_origin","participant_id","flag_1","flag_2","flag_3","fake_test_participant_flag","key_2","key_3"]]
+duplicated_first_last_date_of_birth_ehr=rdr[["participant_id","first_name","last_name","phone_number","email","ehr_status","participant_origin","flag_1","flag_2","flag_3","fake_test_participant_flag","key_2","key_3"]]
+
+
+
+df = duplicated_first_last_date_of_birth.groupby(['key_2'])['withdrawal_status'].nunique()
+
+df
+
+df_3 = duplicated_first_last_date_of_birth.groupby(['key_3'])['withdrawal_status'].nunique()
+
+df_3
+
+import copy
+deep_copy = copy.deepcopy(duplicated_first_last_date_of_birth)
+
+
+result1 = duplicated_first_last_date_of_birth.merge(df, on='key_2', how='inner')
+result1
+
+result2 = deep_copy.merge(df_3, on='key_3', how='inner')
+
+final = pd.concat([result1,result2])
+
+final =final.drop_duplicates()
+
+result1.to_csv("..\\Downloads\\result1.csv")
+
+result2.to_csv("..\\Downloads\\result2.csv")
+
+duplicated_first_last_date_of_birth.to_csv("..\\Downloads\\all.csv")
+
+
+
+df_4 = duplicated_first_last_date_of_birth_ehr.groupby(['key_2'])['ehr_status'].nunique()
+
+df_5 = duplicated_first_last_date_of_birth_ehr.groupby(['key_3'])['ehr_status'].nunique()
+
+import copy
+deep_copy = copy.deepcopy(duplicated_first_last_date_of_birth_ehr)
+
+
+result5 = duplicated_first_last_date_of_birth_ehr.merge(df_4, on='key_2', how='inner')
+
+result6 = deep_copy.merge(df_5, on='key_3', how='inner')
+
+final = pd.concat([result5,result6])
+
+final =final.drop_duplicates()
+
+result5.to_csv("..\\Downloads\\results1.csv")
+
+result6.to_csv("..\\Downloads\\results2.csv")
+
+duplicated_first_last_date_of_birth_ehr.to_csv("..\\Downloads\\alls.csv")
+
+### How many accounts are there per count
+
+rdr=rdr[['participant_id','first_name','last_name','date_of_birth','participant_origin','withdrawal_status']]
+
+rdr
+
+rdr.to_csv("..\\Downloads\\name_DOB.csv")
+
+##  (First, Last DOB) & (Email & Phone)
+
+######################################
+print('Getting the data from the database...')
+##########################431############
+
+query = ('''  
+    SELECT
+       ps.participant_id,ps.participant_origin,ps.first_name,ps.last_name,ps.phone_number,ps.email,date_of_birth,ps.participant_id,o.display_name,ps.organization_id,ps.hpo_id,ps.participant_origin,ps.consent_for_study_enrollment_authored,
+       p.is_ghost_id, ps.zip_code,ps.state_id,city,ps.street_address,ps.withdrawal_status,ps.login_phone_number, health_data_stream_sharing_status_v_3_1,
+    CASE 
+        WHEN
+         (ps.hpo_id = 21 or p.is_ghost_id is not null) or
+         (lower(ps.email) LIKE '%@example.com') or
+         (REPLACE(REPLACE(REPLACE(REPLACE(ps.phone_number, '(', ''), ')', ''), '-', ''), ' ', '') like '4442%') or
+         (REPLACE(REPLACE(REPLACE(REPLACE(ps.login_phone_number, '(', ''), ')', ''), '-', ''), ' ', '') like '4442%')
+           THEN 'Yes'
+           else "No" END as fake_test_participant_flag
+    FROM participant_summary as ps
+    left join organization as o on o.organization_id=ps.organization_id
+    left outer join participant as p USING(participant_id)
+    where 
+        (phone_number,email,ps.first_name, ps.last_name, ps.date_of_birth) in
+                                                        (SELECT
+                                                            phone_number,email,ps.first_name, ps.last_name, ps.date_of_birth
+                                                        FROM participant AS p
+                                                        Left outer Join participant_summary as ps
+                                                        on p.participant_id=ps.participant_id
+                                                        Group By 1,2,3,4,5
+                                                        having count(*)>1
+                                                        )
+                                                         and and ps.withdrawal_status != 1
+    order by 1,2,3
+''')
+
+#Now execute the query and put it it into a dataframe
+rdr = pd.read_sql(query, 
+                     con=cnx)
+
+print('Done!')
+
+rdr.shape
+
+rdr['email']=rdr['email'].str.lower()
+
+rdr['last_name']=rdr['last_name'].str.lower()
+
+rdr['first_name']=rdr['first_name'].str.lower()
+
+rdr['phone_number']=rdr['phone_number'].str.lower()
+
+rdr['flag_1'] = np.where(rdr.duplicated(['first_name', 'last_name','date_of_birth','email','phone_number'],keep=False), 'Yes','No')
+
+rdr['flag_2'] = np.where(rdr.duplicated(['first_name', 'last_name','date_of_birth'],keep=False), 'Yes','No')
+
+rdr['flag_3'] = np.where(rdr.duplicated(['email','phone_number'],keep=False), 'Yes','No')
+
+rdr.loc[rdr['flag_3'] == 'Yes', 'flag_2'] = 'No'
+
+rdr.loc[rdr['flag_2'] == 'Yes', 'flag_3'] = 'No'
+
+rdr.tail(10)
+
+rdr['last_name'] = rdr['last_name'].str.replace('á','a')
+rdr['first_name'] = rdr['first_name'].str.replace('é','e')
+
+rdr['participant_origin'].count()
+
+rdr.to_csv("..\\Downloads\\all.csv")
+
+### How many accounts are there per count
+
+rdr=rdr[['participant_id','first_name', 'last_name','date_of_birth','email','phone_number','participant_origin','withdrawal_status']]
+
+rdr['first_name'] = rdr['first_name'].str.strip()
+
+rdr['last_name'] = rdr['last_name'].str.strip()
+
+rdr.to_csv("..\\Downloads\\all.csv")
+
