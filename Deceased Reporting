@@ -1,0 +1,167 @@
+from google.cloud import bigquery
+import os
+import sys
+import random 
+import string
+import warnings
+warnings.filterwarnings('ignore')
+import pandas_gbq
+import numpy as np
+import pandas as pd
+import datetime as dt
+from datetime import datetime
+from datetime import date
+from datetime import time
+from datetime import timedelta
+import time
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+plt.style.use('ggplot')
+
+%matplotlib inline
+
+pd.set_option('display.max_columns', 999)
+pd.set_option('display.max_rows', 999)
+pd.set_option('display.max_colwidth', 999)
+
+import mysql.connector
+
+import mysql.connector
+
+connect_options = {
+   'user':'cpatrick',
+   'password':'6WXSrtXGWFqdOL8a', 
+   'host':'localhost',
+   'port':'9905',
+   'database':'rdr',
+   'raise_on_warnings': True}
+
+cnx = mysql.connector.connect(**connect_options)
+
+PROJECT = 'aou-pdr-data-prod' 
+DATASET = 'rdr_ops_data_view'
+
+rdr_where = '''
+
+      p.withdrawal_status = 1 and
+      p.hpo_id != 21 and p.is_ghost_id is null and
+     (ps.email NOT LIKE '%@example.com' or ps.email IS NULL) and
+     (REPLACE(REPLACE(REPLACE(REPLACE(ps.phone_number, '(', ''), ')', ''), '-', ''), ' ', '') not like '4442%' or ps.phone_number IS NULL) and
+     (REPLACE(REPLACE(REPLACE(REPLACE(ps.login_phone_number, '(', ''), ')', ''), '-', ''), ' ', '')  not like '4442%' or ps.login_phone_number IS NULL)'''
+
+ rdr = pd.read_sql('''  
+ select  distinct ps.participant_id,site_name, case when deceased_status = 2 then ps.participant_id end deceased_participants,deceased_status,deceased_authored,ps.date_of_death, 
+ case when enrollment_status = 1 then 'Registered'
+ when enrollment_status = 2 then 'Participant'
+ when enrollment_status= 3 then 'Core minus PM'
+ when enrollment_status= 4 then 'Core'
+ else null end as Enrollment_status,
+  case when notification = 1 then 'EHR'
+ when notification = 2 then 'ATTEMPTED_CONTACT'
+ when notification= 3 then 'NEXT_KIN_HPO '
+ when notification= 4 then 'NEXT_KIN_SUPPORT'
+ when notification = 5 then 'OTHER'
+ else null end as notfication
+ from participant_summary ps
+left join site si on si.site_id = ps.site_id
+left join deceased_report dr on ps.participant_id =  dr.participant_id
+    '''.format(rdr_where), cnx)
+
+count = rdr["deceased_participants"].count()
+
+deceased = rdr.loc[(rdr['deceased_status'] == 2)]
+
+nulls = deceased.loc[(rdr['site_name'].isnull())]
+nulls
+
+nulls = nulls["notfication"].value_counts(dropna=False)
+nulls
+
+site = deceased["site_name"].value_counts(dropna=False)
+site
+
+Enrollment = deceased["Enrollment_status"].value_counts(dropna=False)
+Enrollment
+
+notfication = deceased["notfication"].value_counts(dropna=False)
+notfication
+
+status = rdr["deceased_status"].value_counts()
+
+deceased.loc[(deceased['deceased_authored'].notnull()) & (deceased['date_of_death'].notnull() ) & (deceased['deceased_status'].notnull())]['participant_id'].count()
+
+deceased.loc[(deceased['date_of_death'].isnull() )]['participant_id'].count()
+
+dataset = 'aou-pdr-data-prod.curation_data_view'
+
+death = pd.read_gbq(f"""    
+                     
+                         SELECT *,  date(death_datetime) as death_datetimes
+                         from `{dataset}.unioned_ehr_death` 
+                    
+                      """)
+death
+
+death['death_datetime'] = death['death_datetime'].replace('2100-01-01 07:00:00+00:00',np.NAN)
+
+death['death_date'] =pd.to_datetime(death['death_date'])
+
+death['death_date'] = death['death_date'].replace('2100-01-01 00:00:00',np.NAN)
+
+death
+
+death['death_datetime'] =pd.to_datetime(death['death_datetime'])
+
+death
+
+counts = death["person_id"].count()
+counts
+
+death.loc[(death['death_datetime']!="2100-01-01") & (death['death_date'].notnull() ) & (death['death_type_concept_id']!=0)]['person_id'].count()
+
+death.loc[(death['death_date'].isnull())]['person_id'].count()
+
+death.loc[(death['death_datetime'].isnull() )]['person_id'].count()
+
+death.loc[(death['death_type_concept_id'] == 0 )]['person_id'].count()
+
+death.loc[((death['death_datetime'].isnull()) & (death['death_date'].isnull()) & (death['death_type_concept_id'] == 0))]['person_id'].count()
+
+both = pd.merge(death, rdr, left_on="person_id", right_on="participant_id")
+
+sites = both["site_name"].value_counts(dropna=False)
+sites
+
+both_combined = pd.merge(death, deceased, left_on="person_id", right_on="participant_id")
+
+sites2 = both_combined["site_name"].value_counts(dropna=False)
+sites2
+
+both_combined.loc[(both_combined['death_datetime'].isnull()) & (both_combined['death_date'].isnull() ) & (both_combined['date_of_death'].notnull())]['person_id'].count()
+
+trying = both_combined[(both_combined.death_date.isnull()) | (both_combined.death_datetime.isnull())]
+
+trying.loc[(trying['date_of_death'].isnull() )]['participant_id'].count()
+
+trying.loc[(trying['date_of_death'].notnull() )]['participant_id'].count()
+
+len(both_combined.loc[both_combined.date_of_death != both_combined.death_date])
+
+site.to_csv("..\\Downloads\\site.csv")
+
+sites.to_csv("..\\Downloads\\sites.csv")
+
+sites2.to_csv("..\\Downloads\\sites2.csv")
+
+from matplotlib.dates import date2num   
+
+
+
+deceased['deceased_authored'] 
+
+final = deceased['deceased_authored'] - death['death_date']
+final
+
+final.to_csv("..\\Downloads\\final.csv")
+
